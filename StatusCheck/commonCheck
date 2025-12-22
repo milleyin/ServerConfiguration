@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -e
+
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+BASELINE_DIR="$BASE_DIR/baseline"
+NOW=$(date +"%Y-%m-%d %H:%M:%S")
+
+mkdir -p "$BASELINE_DIR"
+
+echo "=============================="
+echo " Security Check @ $NOW"
+echo "=============================="
+
+changed=false
+
+### 1. 进程检查
+echo
+echo "[PROCESS]"
+ps aux --sort=pid > /tmp/ps.now
+
+if [ -f "$BASELINE_DIR/ps.txt" ]; then
+  diff_out=$(diff -u "$BASELINE_DIR/ps.txt" /tmp/ps.now || true)
+  if [ -n "$diff_out" ]; then
+    echo "⚠️  Process list changed:"
+    echo "$diff_out" | sed 's/^/  /'
+    changed=true
+  else
+    echo "✓ No change"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+
+cp /tmp/ps.now "$BASELINE_DIR/ps.txt"
+
+### 2. 网络连接检查
+echo
+echo "[NETWORK]"
+ss -antp | grep ESTAB | sort > /tmp/net.now
+
+if [ -f "$BASELINE_DIR/net.txt" ]; then
+  diff_out=$(diff -u "$BASELINE_DIR/net.txt" /tmp/net.now || true)
+  if [ -n "$diff_out" ]; then
+    echo "⚠️  ESTABLISHED connections changed:"
+    echo "$diff_out" | sed 's/^/  /'
+    changed=true
+  else
+    echo "✓ No change"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+
+cp /tmp/net.now "$BASELINE_DIR/net.txt"
+
+### 3. cron 检查
+echo
+echo "[CRON]"
+{
+  crontab -l 2>/dev/null || true
+  ls -l /etc/cron.* 2>/dev/null || true
+} > /tmp/cron.now
+
+if [ -f "$BASELINE_DIR/cron.txt" ]; then
+  diff_out=$(diff -u "$BASELINE_DIR/cron.txt" /tmp/cron.now || true)
+  if [ -n "$diff_out" ]; then
+    echo "❗ Cron changed (high risk):"
+    echo "$diff_out" | sed 's/^/  /'
+    changed=true
+  else
+    echo "✓ No change"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+
+cp /tmp/cron.now "$BASELINE_DIR/cron.txt"
+
+### 4. 最近文件变动
+echo
+echo "[FILES]"
+find / -xdev -type f -mtime -3 2>/dev/null | sort > /tmp/files.now
+
+if [ -f "$BASELINE_DIR/files.txt" ]; then
+  diff_out=$(diff -u "$BASELINE_DIR/files.txt" /tmp/files.now || true)
+  if [ -n "$diff_out" ]; then
+    echo "⚠️  File changes detected:"
+    echo "$diff_out" | sed 's/^/  /'
+    changed=true
+  else
+    echo "✓ No change"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+
+cp /tmp/files.now "$BASELINE_DIR/files.txt"
+
+### 总结
+echo
+echo "=============================="
+if [ "$changed" = true ]; then
+  echo "RESULT: ⚠️  CHANGES DETECTED — manual review recommended"
+else
+  echo "RESULT: ✅ OK — no unexpected changes"
+fi
+echo "=============================="
