@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 set -e
 
+######################################
+# SafetyCheck
+# Version: v1.1.0
+######################################
+
 # ===== 基础路径 =====
 BASE_DIR="$HOME/safetyCheck"
 BASELINE_DIR="$BASE_DIR/baseline"
 LOG_DIR="$BASE_DIR/logs"
+VERSION="v1.1.0"
+
 NOW=$(date +"%Y-%m-%d %H:%M:%S")
-LOG_FILE="$LOG_DIR/$(date +"%Y-%m-%d_%H-%M-%S").log"
+TS=$(date +"%Y-%m-%d_%H-%M-%S")
+LOG_FILE="$LOG_DIR/$TS.log"
 
 mkdir -p "$BASELINE_DIR" "$LOG_DIR"
 
@@ -14,136 +22,206 @@ mkdir -p "$BASELINE_DIR" "$LOG_DIR"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "=============================="
-echo " Security Check @ $NOW"
+echo " Safety Check $VERSION"
+echo " Time: $NOW"
 echo "=============================="
 
 changed=false
 
-########################
+######################################
 # 1. PROCESS CHECK
-########################
+######################################
 echo
 echo "[PROCESS]"
-
 ps aux --sort=pid > /tmp/ps.now
 
 if [ -f "$BASELINE_DIR/ps.txt" ]; then
   diff -u "$BASELINE_DIR/ps.txt" /tmp/ps.now || true > /tmp/ps.diff.full
-
-  # 只挑可能有风险的进程变化
   grep -E '^\+.*(/tmp|/var/tmp|/dev/shm|/home|bash|sh )' /tmp/ps.diff.full > /tmp/ps.diff.risky || true
 
   if [ -s /tmp/ps.diff.risky ]; then
-    echo "⚠️  Suspicious process changes:"
+    echo "⚠️  Suspicious process changes"
     sed 's/^/  /' /tmp/ps.diff.risky
     changed=true
   else
-    echo "✓ No suspicious process change"
+    echo "✅ OK"
   fi
 else
   echo "Baseline not found, creating..."
 fi
-
 cp /tmp/ps.now "$BASELINE_DIR/ps.txt"
 
-########################
-# 2. NETWORK CHECK
-########################
+######################################
+# 2. NETWORK (ESTABLISHED)
+######################################
 echo
 echo "[NETWORK]"
-
 ss -antp | grep ESTAB | sort > /tmp/net.now
 
 if [ -f "$BASELINE_DIR/net.txt" ]; then
   diff -u "$BASELINE_DIR/net.txt" /tmp/net.now || true > /tmp/net.diff.full
-
-  # 排除 SSH 自己的连接，只看异常服务端口
   grep -Ev 'sshd' /tmp/net.diff.full > /tmp/net.diff.risky || true
 
   if [ -s /tmp/net.diff.risky ]; then
-    echo "⚠️  Suspicious network connections:"
+    echo "⚠️  Suspicious network connections"
     sed 's/^/  /' /tmp/net.diff.risky
     changed=true
   else
-    echo "✓ No suspicious network connections"
+    echo "✅ OK"
   fi
 else
   echo "Baseline not found, creating..."
 fi
-
 cp /tmp/net.now "$BASELINE_DIR/net.txt"
 
-########################
-# 3. CRON CHECK（高风险）
-########################
+######################################
+# 3. LISTEN PORTS
+######################################
+echo
+echo "[LISTEN PORTS]"
+ss -lntup | sort > /tmp/listen.now
+
+if [ -f "$BASELINE_DIR/listen.txt" ]; then
+  diff -u "$BASELINE_DIR/listen.txt" /tmp/listen.now || true > /tmp/listen.diff
+  if [ -s /tmp/listen.diff ]; then
+    echo "⚠️  New listening ports detected"
+    sed 's/^/  /' /tmp/listen.diff
+    changed=true
+  else
+    echo "✅ OK"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+cp /tmp/listen.now "$BASELINE_DIR/listen.txt"
+
+######################################
+# 4. CRON (HIGH RISK)
+######################################
 echo
 echo "[CRON]"
-
-{
-  crontab -l 2>/dev/null || true
-  ls -l /etc/cron.* 2>/dev/null || true
-} > /tmp/cron.now
+{ crontab -l 2>/dev/null || true; ls -l /etc/cron.* 2>/dev/null || true; } > /tmp/cron.now
 
 if [ -f "$BASELINE_DIR/cron.txt" ]; then
   diff -u "$BASELINE_DIR/cron.txt" /tmp/cron.now || true > /tmp/cron.diff
-
   if [ -s /tmp/cron.diff ]; then
-    echo "❗ Cron changed (high risk):"
+    echo "❗ HIGH RISK: Cron changed"
     sed 's/^/  /' /tmp/cron.diff
     changed=true
   else
-    echo "✓ No cron change"
+    echo "✅ OK"
   fi
 else
   echo "Baseline not found, creating..."
 fi
-
 cp /tmp/cron.now "$BASELINE_DIR/cron.txt"
 
-########################
-# 4. FILE CHANGE CHECK
-########################
+######################################
+# 5. USER & PERMISSION
+######################################
 echo
-echo "[FILES]"
+echo "[USER & PERMISSION]"
+getent passwd > /tmp/user.now
+getent group > /tmp/group.now
+ls -l /etc/sudoers.d 2>/dev/null > /tmp/sudoers.now || true
 
-find / -xdev -type f -mtime -3 \
-  ! -path "/proc/*" \
-  ! -path "/sys/*" \
-  ! -path "/run/*" \
-  ! -path "/tmp/*" \
-  ! -path "/var/tmp/*" \
-  ! -path "/var/log/*" \
-  ! -path "$BASE_DIR/*" \
-  | sort > /tmp/files.now
+cat /tmp/user.now /tmp/group.now /tmp/sudoers.now > /tmp/userperm.now
 
-if [ -f "$BASELINE_DIR/files.txt" ]; then
-  diff -u "$BASELINE_DIR/files.txt" /tmp/files.now || true > /tmp/files.diff.full
-
-  # 只提示非系统目录的新增文件
-  grep -E '^\+.*(/home|/root|/opt|/usr/local)' /tmp/files.diff.full > /tmp/files.diff.risky || true
-
-  if [ -s /tmp/files.diff.risky ]; then
-    echo "⚠️  Suspicious file changes:"
-    sed 's/^/  /' /tmp/files.diff.risky
+if [ -f "$BASELINE_DIR/userperm.txt" ]; then
+  diff -u "$BASELINE_DIR/userperm.txt" /tmp/userperm.now || true > /tmp/userperm.diff
+  if [ -s /tmp/userperm.diff ]; then
+    echo "❗ HIGH RISK: User or privilege changed"
+    sed 's/^/  /' /tmp/userperm.diff
     changed=true
   else
-    echo "✓ No suspicious file change"
+    echo "✅ OK"
   fi
 else
   echo "Baseline not found, creating..."
 fi
+cp /tmp/userperm.now "$BASELINE_DIR/userperm.txt"
 
-cp /tmp/files.now "$BASELINE_DIR/files.txt"
+######################################
+# 6. SSH AUTHORIZED KEYS
+######################################
+echo
+echo "[SSH AUTH KEYS]"
+find /root /home -path "*/.ssh/authorized_keys" -type f -exec cat {} \; 2>/dev/null \
+  | sort > /tmp/sshkeys.now
 
-########################
+if [ -f "$BASELINE_DIR/sshkeys.txt" ]; then
+  diff -u "$BASELINE_DIR/sshkeys.txt" /tmp/sshkeys.now || true > /tmp/sshkeys.diff
+  if [ -s /tmp/sshkeys.diff ]; then
+    echo "❗ HIGH RISK: SSH key changed"
+    sed 's/^/  /' /tmp/sshkeys.diff
+    changed=true
+  else
+    echo "✅ OK"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+cp /tmp/sshkeys.now "$BASELINE_DIR/sshkeys.txt"
+
+######################################
+# 7. SYSTEMD ENABLED SERVICES
+######################################
+echo
+echo "[SYSTEMD SERVICES]"
+systemctl list-unit-files --state=enabled | sort > /tmp/systemd.now
+
+if [ -f "$BASELINE_DIR/systemd.txt" ]; then
+  diff -u "$BASELINE_DIR/systemd.txt" /tmp/systemd.now || true > /tmp/systemd.diff
+  if [ -s /tmp/systemd.diff ]; then
+    echo "❗ HIGH RISK: New enabled service"
+    sed 's/^/  /' /tmp/systemd.diff
+    changed=true
+  else
+    echo "✅ OK"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+cp /tmp/systemd.now "$BASELINE_DIR/systemd.txt"
+
+######################################
+# 8. FIREWALL (iptables)
+######################################
+echo
+echo "[FIREWALL]"
+cat /etc/sysconfig/iptables 2>/dev/null > /tmp/iptables.now || true
+
+if [ -f "$BASELINE_DIR/iptables.txt" ]; then
+  diff -u "$BASELINE_DIR/iptables.txt" /tmp/iptables.now || true > /tmp/iptables.diff
+  if [ -s /tmp/iptables.diff ]; then
+    echo "❗ HIGH RISK: Firewall rules changed"
+    sed 's/^/  /' /tmp/iptables.diff
+    changed=true
+  else
+    echo "✅ OK"
+  fi
+else
+  echo "Baseline not found, creating..."
+fi
+cp /tmp/iptables.now "$BASELINE_DIR/iptables.txt"
+
+######################################
+# 9. LOGIN ACTIVITY (LOG ONLY)
+######################################
+echo
+echo "[LOGIN ACTIVITY]"
+last -a | head -20 >> "$LOG_FILE"
+echo "✅ Logged (informational)"
+
+######################################
 # SUMMARY
-########################
+######################################
 echo
 echo "=============================="
 if [ "$changed" = true ]; then
-  echo "RESULT: ⚠️  CHANGES DETECTED — manual review recommended"
+  echo "RESULT: ⚠️  ATTENTION REQUIRED"
 else
-  echo "RESULT: ✅ OK — no unexpected changes"
+  echo "RESULT: ✅ ALL CHECKS PASSED"
 fi
 echo "Log saved to: $LOG_FILE"
 echo "=============================="
