@@ -1,41 +1,44 @@
 #!/usr/bin/env bash
 set -e
 
-### ===== 基础路径 =====
-SAFETY_DIR="$HOME/safetyCheck"
-BASELINE_DIR="$SAFETY_DIR/baseline"
-LOG_DIR="$SAFETY_DIR/logs"
+# ===== 基础路径 =====
+BASE_DIR="$HOME/safetyCheck"
+BASELINE_DIR="$BASE_DIR/baseline"
+LOG_DIR="$BASE_DIR/logs"
+NOW=$(date +"%Y-%m-%d %H:%M:%S")
+LOG_FILE="$LOG_DIR/$(date +"%Y-%m-%d_%H-%M-%S").log"
 
 mkdir -p "$BASELINE_DIR" "$LOG_DIR"
 
-NOW_TS="$(date '+%Y-%m-%d %H:%M:%S')"
-LOG_FILE="$LOG_DIR/$(date '+%Y-%m-%d_%H-%M-%S').log"
-
-# 输出同时写日志
+# ===== 输出同时写终端 + 日志 =====
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "=============================="
-echo " Security Check @ $NOW_TS"
+echo " Security Check @ $NOW"
 echo "=============================="
 
 changed=false
 
-### ===== 1. 进程检查 =====
+########################
+# 1. PROCESS CHECK
+########################
 echo
 echo "[PROCESS]"
 
-ps aux --sort=pid \
-  | grep -Ev 'kworker|sshd-session|systemd --user|ps aux|bash' \
-  > /tmp/ps.now
+ps aux --sort=pid > /tmp/ps.now
 
 if [ -f "$BASELINE_DIR/ps.txt" ]; then
-  diff_out=$(diff -u "$BASELINE_DIR/ps.txt" /tmp/ps.now || true)
-  if [ -n "$diff_out" ]; then
-    echo "⚠️  Process list changed (filtered):"
-    echo "$diff_out" | sed 's/^/  /'
+  diff -u "$BASELINE_DIR/ps.txt" /tmp/ps.now || true > /tmp/ps.diff.full
+
+  # 只挑可能有风险的进程变化
+  grep -E '^\+.*(/tmp|/var/tmp|/dev/shm|/home|bash|sh )' /tmp/ps.diff.full > /tmp/ps.diff.risky || true
+
+  if [ -s /tmp/ps.diff.risky ]; then
+    echo "⚠️  Suspicious process changes:"
+    sed 's/^/  /' /tmp/ps.diff.risky
     changed=true
   else
-    echo "✓ No meaningful process change"
+    echo "✓ No suspicious process change"
   fi
 else
   echo "Baseline not found, creating..."
@@ -43,20 +46,23 @@ fi
 
 cp /tmp/ps.now "$BASELINE_DIR/ps.txt"
 
-### ===== 2. 网络连接检查 =====
+########################
+# 2. NETWORK CHECK
+########################
 echo
 echo "[NETWORK]"
 
-ss -antp \
-  | grep ESTAB \
-  | grep -Ev ':(22|80|443|3306)\s' \
-  | sort > /tmp/net.now
+ss -antp | grep ESTAB | sort > /tmp/net.now
 
 if [ -f "$BASELINE_DIR/net.txt" ]; then
-  diff_out=$(diff -u "$BASELINE_DIR/net.txt" /tmp/net.now || true)
-  if [ -n "$diff_out" ]; then
-    echo "⚠️  Suspicious ESTABLISHED connections:"
-    echo "$diff_out" | sed 's/^/  /'
+  diff -u "$BASELINE_DIR/net.txt" /tmp/net.now || true > /tmp/net.diff.full
+
+  # 排除 SSH 自己的连接，只看异常服务端口
+  grep -Ev 'sshd' /tmp/net.diff.full > /tmp/net.diff.risky || true
+
+  if [ -s /tmp/net.diff.risky ]; then
+    echo "⚠️  Suspicious network connections:"
+    sed 's/^/  /' /tmp/net.diff.risky
     changed=true
   else
     echo "✓ No suspicious network connections"
@@ -67,7 +73,9 @@ fi
 
 cp /tmp/net.now "$BASELINE_DIR/net.txt"
 
-### ===== 3. Cron 检查（高风险项）=====
+########################
+# 3. CRON CHECK（高风险）
+########################
 echo
 echo "[CRON]"
 
@@ -77,10 +85,11 @@ echo "[CRON]"
 } > /tmp/cron.now
 
 if [ -f "$BASELINE_DIR/cron.txt" ]; then
-  diff_out=$(diff -u "$BASELINE_DIR/cron.txt" /tmp/cron.now || true)
-  if [ -n "$diff_out" ]; then
-    echo "❗ CRON CHANGED (HIGH RISK):"
-    echo "$diff_out" | sed 's/^/  /'
+  diff -u "$BASELINE_DIR/cron.txt" /tmp/cron.now || true > /tmp/cron.diff
+
+  if [ -s /tmp/cron.diff ]; then
+    echo "❗ Cron changed (high risk):"
+    sed 's/^/  /' /tmp/cron.diff
     changed=true
   else
     echo "✓ No cron change"
@@ -91,7 +100,9 @@ fi
 
 cp /tmp/cron.now "$BASELINE_DIR/cron.txt"
 
-### ===== 4. 文件变动检查 =====
+########################
+# 4. FILE CHANGE CHECK
+########################
 echo
 echo "[FILES]"
 
@@ -102,16 +113,21 @@ find / -xdev -type f -mtime -3 \
   ! -path "/tmp/*" \
   ! -path "/var/tmp/*" \
   ! -path "/var/log/*" \
+  ! -path "$BASE_DIR/*" \
   | sort > /tmp/files.now
 
 if [ -f "$BASELINE_DIR/files.txt" ]; then
-  diff_out=$(diff -u "$BASELINE_DIR/files.txt" /tmp/files.now || true)
-  if [ -n "$diff_out" ]; then
-    echo "⚠️  File changes detected (filtered):"
-    echo "$diff_out" | sed 's/^/  /'
+  diff -u "$BASELINE_DIR/files.txt" /tmp/files.now || true > /tmp/files.diff.full
+
+  # 只提示非系统目录的新增文件
+  grep -E '^\+.*(/home|/root|/opt|/usr/local)' /tmp/files.diff.full > /tmp/files.diff.risky || true
+
+  if [ -s /tmp/files.diff.risky ]; then
+    echo "⚠️  Suspicious file changes:"
+    sed 's/^/  /' /tmp/files.diff.risky
     changed=true
   else
-    echo "✓ No suspicious file changes"
+    echo "✓ No suspicious file change"
   fi
 else
   echo "Baseline not found, creating..."
@@ -119,7 +135,9 @@ fi
 
 cp /tmp/files.now "$BASELINE_DIR/files.txt"
 
-### ===== 总结 =====
+########################
+# SUMMARY
+########################
 echo
 echo "=============================="
 if [ "$changed" = true ]; then
