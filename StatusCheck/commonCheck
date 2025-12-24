@@ -91,20 +91,30 @@ fi
 cp "$TMP_DIR/ps.now" "$BASELINE_DIR/ps.txt"
 
 ######################################
-# 2. NETWORK (ESTABLISHED) — 去掉队列字段降噪
+# 2. NETWORK (ESTABLISHED)
 ######################################
 echo
 echo "[NETWORK]"
 
+# 只保留稳定字段，避免 Recv-Q / Send-Q 抖动
 ss -H -antp state established \
   | awk '{print $1, $2, $4, $5, $6}' \
   | sort > "$TMP_DIR/net.now"
 
 if [ -f "$BASELINE_DIR/net.txt" ]; then
+  # 1️⃣ 全量 diff → 写 log
   { diff -u "$BASELINE_DIR/net.txt" "$TMP_DIR/net.now" || true; } > "$TMP_DIR/net.diff.full"
   log_only "[NETWORK][FULL DIFF]" "$TMP_DIR/net.diff.full"
 
-  grep '^+' "$TMP_DIR/net.diff.full" | grep -v '^+++' | grep -Ev 'sshd' > "$TMP_DIR/net.diff.risky" || true
+  # 2️⃣ 只取新增连接
+  grep '^+' "$TMP_DIR/net.diff.full" \
+    | grep -v '^+++' \
+    > "$TMP_DIR/net.diff.added" || true
+
+  # 3️⃣ 风险判定：
+  #    - 排除 sshd（自己登录）
+  #    - 排除 nginx（Web 流量天然噪音）
+  grep -Ev 'sshd|nginx' "$TMP_DIR/net.diff.added" > "$TMP_DIR/net.diff.risky" || true
 
   if [ -s "$TMP_DIR/net.diff.risky" ]; then
     echo "⚠️  Suspicious network connections:"
@@ -121,7 +131,7 @@ fi
 cp "$TMP_DIR/net.now" "$BASELINE_DIR/net.txt"
 
 ######################################
-# 3. LISTEN PORTS — 去掉队列字段降噪
+# 3. LISTEN PORTS
 ######################################
 echo
 echo "[LISTEN PORTS]"
@@ -290,7 +300,6 @@ cp "$TMP_DIR/systemd.now" "$BASELINE_DIR/systemd.txt"
 
 ######################################
 # 8. FIREWALL (iptables) (HIGH RISK)
-#    Fix: remove iptables-save timestamp comments to avoid false alarms
 ######################################
 echo
 echo "[FIREWALL]"
