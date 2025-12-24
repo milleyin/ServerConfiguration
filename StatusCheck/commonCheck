@@ -62,19 +62,26 @@ fi
 
 cp /tmp/ps.now "$BASELINE_DIR/ps.txt"
 
-######################################
-# 2. NETWORK (ESTABLISHED)
-######################################
+########################
+# 2. NETWORK CHECK
+########################
 echo
 echo "[NETWORK]"
+
 ss -antp | grep ESTAB | sort > /tmp/net.now
 
 if [ -f "$BASELINE_DIR/net.txt" ]; then
-  diff -u "$BASELINE_DIR/net.txt" /tmp/net.now || true > /tmp/net.diff.full
-  grep -Ev 'sshd' /tmp/net.diff.full > /tmp/net.diff.risky || true
+  # 1️⃣ 全量 diff，只写日志
+  { diff -u "$BASELINE_DIR/net.txt" /tmp/net.now || true; } > /tmp/net.diff.full
+
+  # 2️⃣ 排除 sshd、自身连接
+  grep '^+' /tmp/net.diff.full \
+    | grep -v '^+++' \
+    | grep -Ev '(sshd|127\.0\.0\.1)' \
+    > /tmp/net.diff.risky || true
 
   if [ -s /tmp/net.diff.risky ]; then
-    echo "⚠️  Suspicious network connections"
+    echo "⚠️  Suspicious network connections:"
     sed 's/^/  /' /tmp/net.diff.risky
     changed=true
   else
@@ -83,6 +90,7 @@ if [ -f "$BASELINE_DIR/net.txt" ]; then
 else
   echo "Baseline not found, creating..."
 fi
+
 cp /tmp/net.now "$BASELINE_DIR/net.txt"
 
 ######################################
