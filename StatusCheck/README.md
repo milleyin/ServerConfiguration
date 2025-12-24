@@ -170,5 +170,4 @@ SafetyCheck 刻意 **不做** 的事情：
 
 ## License
 
-Private / Internal Use  
-如需在其他环境使用，请自行审查与调整规则。
+随便用
