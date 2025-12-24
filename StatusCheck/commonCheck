@@ -34,19 +34,18 @@ changed=false
 echo
 echo "[PROCESS]"
 
-# 1️⃣ 当前进程快照（完整，进日志用）
 ps aux --sort=pid > /tmp/ps.now
 
 if [ -f "$BASELINE_DIR/ps.txt" ]; then
-  # 2️⃣ 完整 diff 写日志，不提示）
-  diff -u "$BASELINE_DIR/ps.txt" /tmp/ps.now || true > /tmp/ps.diff.full
+  # 1️⃣ 完整 diff，写日志
+  { diff -u "$BASELINE_DIR/ps.txt" /tmp/ps.now || true; } > /tmp/ps.diff.full
 
-  # 3️⃣ 提取“新增进程行”
+  # 2️⃣ 取新增进程
   grep '^+' /tmp/ps.diff.full \
     | grep -v '^+++' \
     > /tmp/ps.diff.added || true
 
-  # 4️⃣ 过滤可疑的进程特征
+  # 3️⃣ 行为特征过滤
   grep -E '(/tmp|/var/tmp|/dev/shm|/home/|bash -c|sh -c|python -c|perl -e|curl .*bash|wget .*sh|nc |socat )' \
     /tmp/ps.diff.added > /tmp/ps.diff.risky || true
 
@@ -61,7 +60,6 @@ else
   echo "Baseline not found, creating..."
 fi
 
-# 5️⃣ 更新 baseline
 cp /tmp/ps.now "$BASELINE_DIR/ps.txt"
 
 ######################################
