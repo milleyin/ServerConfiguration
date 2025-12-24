@@ -3,14 +3,14 @@ set -e
 
 ######################################
 # SafetyCheck
-# Version: v1.1.1
+# Version: v1.1.2
 ######################################
 
 # ===== 基础路径 =====
 BASE_DIR="$HOME/safetyCheck"
 BASELINE_DIR="$BASE_DIR/baseline"
 LOG_DIR="$BASE_DIR/logs"
-VERSION="v1.1.1"
+VERSION="v1.1.2"
 
 NOW=$(date +"%Y-%m-%d %H:%M:%S")
 TS=$(date +"%Y-%m-%d_%H-%M-%S")
@@ -27,23 +27,20 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 log_only() {
-  # 将文件内容仅写入 log（不进终端）
-  # 用法：log_only "=== title ===" /path/to/file
   local title="$1"
   local file="$2"
   {
     echo
     echo "$title"
-    if [ -f "$file" ]; then
+    if [ -s "$file" ]; then
       cat "$file"
     else
-      echo "(missing: $file)"
+      echo "(no changes)"
     fi
   } >> "$LOG_FILE"
 }
 
 log_text_only() {
-  # 将文本仅写入 log（不进终端）
   local title="$1"
   shift
   {
@@ -69,14 +66,11 @@ echo "[PROCESS]"
 ps aux --sort=pid > "$TMP_DIR/ps.now"
 
 if [ -f "$BASELINE_DIR/ps.txt" ]; then
-  # 全量 diff：仅写入 log
   { diff -u "$BASELINE_DIR/ps.txt" "$TMP_DIR/ps.now" || true; } > "$TMP_DIR/ps.diff.full"
   log_only "[PROCESS][FULL DIFF]" "$TMP_DIR/ps.diff.full"
 
-  # 取新增行（新增进程）
   grep '^+' "$TMP_DIR/ps.diff.full" | grep -v '^+++' > "$TMP_DIR/ps.diff.added" || true
 
-  # 行为特征过滤：只把“可能危险”的吐到终端（同时也会因为 tee 写进 log）
   grep -E '(/tmp|/var/tmp|/dev/shm|/home/|bash -c|sh -c|python -c|perl -e|curl .*bash|wget .*sh|nc |socat )' \
     "$TMP_DIR/ps.diff.added" > "$TMP_DIR/ps.diff.risky" || true
 
@@ -89,7 +83,9 @@ if [ -f "$BASELINE_DIR/ps.txt" ]; then
   fi
 else
   echo "Baseline not found, creating..."
-  log_text_only "[PROCESS][NOTE]" "Baseline not found, creating..."
+  log_text_only "[PROCESS][NOTE]" \
+    "Baseline not found, creating..." \
+    "Baseline created at $NOW by $(whoami) on $(hostname)"
 fi
 
 cp "$TMP_DIR/ps.now" "$BASELINE_DIR/ps.txt"
@@ -100,8 +96,6 @@ cp "$TMP_DIR/ps.now" "$BASELINE_DIR/ps.txt"
 echo
 echo "[NETWORK]"
 
-# 只保留：proto state local remote process（去掉 Recv-Q/Send-Q）
-# ss -H 不要 header，字段稳定
 ss -H -antp state established \
   | awk '{print $1, $2, $4, $5, $6}' \
   | sort > "$TMP_DIR/net.now"
@@ -110,7 +104,6 @@ if [ -f "$BASELINE_DIR/net.txt" ]; then
   { diff -u "$BASELINE_DIR/net.txt" "$TMP_DIR/net.now" || true; } > "$TMP_DIR/net.diff.full"
   log_only "[NETWORK][FULL DIFF]" "$TMP_DIR/net.diff.full"
 
-  # 风险判断：新增的已建立连接里，排除 sshd（你自己连上来必然会变）
   grep '^+' "$TMP_DIR/net.diff.full" | grep -v '^+++' | grep -Ev 'sshd' > "$TMP_DIR/net.diff.risky" || true
 
   if [ -s "$TMP_DIR/net.diff.risky" ]; then
@@ -141,7 +134,6 @@ if [ -f "$BASELINE_DIR/listen.txt" ]; then
   { diff -u "$BASELINE_DIR/listen.txt" "$TMP_DIR/listen.now" || true; } > "$TMP_DIR/listen.diff.full"
   log_only "[LISTEN PORTS][FULL DIFF]" "$TMP_DIR/listen.diff.full"
 
-  # 只提示新增监听（新增行）
   grep '^+' "$TMP_DIR/listen.diff.full" | grep -v '^+++' > "$TMP_DIR/listen.diff.added" || true
 
   if [ -s "$TMP_DIR/listen.diff.added" ]; then
@@ -178,7 +170,6 @@ if [ -f "$BASELINE_DIR/cron.txt" ]; then
 
   if [ -s "$TMP_DIR/cron.diff.full" ]; then
     echo "❗ HIGH RISK: Cron changed"
-    # 终端只显示 diff 的新增/删除行，避免整屏
     grep -E '^[\+\-]' "$TMP_DIR/cron.diff.full" | grep -vE '^\+\+\+|^\-\-\-' | sed 's/^/  /' || true
     changed=true
   else
@@ -238,7 +229,6 @@ cp "$TMP_DIR/userperm.now" "$BASELINE_DIR/userperm.txt"
 echo
 echo "[SSH AUTH KEYS]"
 
-# 把 “路径 + 权限 + 内容” 一起快照，避免只 cat 导致丢归属
 {
   find /root /home -type f -path "*/.ssh/authorized_keys" 2>/dev/null \
     | sort \
@@ -258,7 +248,6 @@ if [ -f "$BASELINE_DIR/sshkeys.txt" ]; then
 
   if [ -s "$TMP_DIR/sshkeys.diff.full" ]; then
     echo "❗ HIGH RISK: SSH authorized_keys changed"
-    # 终端只显示新增的 key 行/删除的 key 行（避免整屏）
     grep -E '^[\+\-].*(ssh-|ecdsa-|sk-ssh-)' "$TMP_DIR/sshkeys.diff.full" | sed 's/^/  /' || true
     changed=true
   else
@@ -283,7 +272,6 @@ if [ -f "$BASELINE_DIR/systemd.txt" ]; then
   { diff -u "$BASELINE_DIR/systemd.txt" "$TMP_DIR/systemd.now" || true; } > "$TMP_DIR/systemd.diff.full"
   log_only "[SYSTEMD SERVICES][FULL DIFF]" "$TMP_DIR/systemd.diff.full"
 
-  # 终端只提示新增 enabled 的服务
   grep '^+' "$TMP_DIR/systemd.diff.full" | grep -v '^+++' > "$TMP_DIR/systemd.diff.added" || true
 
   if [ -s "$TMP_DIR/systemd.diff.added" ]; then
@@ -302,15 +290,19 @@ cp "$TMP_DIR/systemd.now" "$BASELINE_DIR/systemd.txt"
 
 ######################################
 # 8. FIREWALL (iptables) (HIGH RISK)
+#    Fix: remove iptables-save timestamp comments to avoid false alarms
 ######################################
 echo
 echo "[FIREWALL]"
 
-# 优先用 iptables-save（更真实），没有就退回配置文件
 if command -v iptables-save >/dev/null 2>&1; then
-  iptables-save 2>/dev/null > "$TMP_DIR/iptables.now" || true
+  iptables-save 2>/dev/null \
+    | grep -vE '^# (Generated|Completed) ' \
+    > "$TMP_DIR/iptables.now" || true
 else
-  cat /etc/sysconfig/iptables 2>/dev/null > "$TMP_DIR/iptables.now" || true
+  cat /etc/sysconfig/iptables 2>/dev/null \
+    | grep -vE '^# (Generated|Completed) ' \
+    > "$TMP_DIR/iptables.now" || true
 fi
 
 if [ -f "$BASELINE_DIR/iptables.txt" ]; then
@@ -319,7 +311,6 @@ if [ -f "$BASELINE_DIR/iptables.txt" ]; then
 
   if [ -s "$TMP_DIR/iptables.diff.full" ]; then
     echo "❗ HIGH RISK: Firewall rules changed"
-    # 终端只显示新增/删除规则（避免整屏）
     grep -E '^[\+\-]' "$TMP_DIR/iptables.diff.full" | grep -vE '^\+\+\+|^\-\-\-' | sed 's/^/  /' || true
     changed=true
   else
@@ -337,7 +328,6 @@ cp "$TMP_DIR/iptables.now" "$BASELINE_DIR/iptables.txt"
 ######################################
 echo
 echo "[LOGIN ACTIVITY]"
-# 只写 log，不进终端（避免“我自己登陆也刷屏”）
 {
   echo
   echo "[LOGIN ACTIVITY][LAST 50]"
