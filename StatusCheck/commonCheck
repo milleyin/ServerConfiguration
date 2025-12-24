@@ -28,19 +28,30 @@ echo "=============================="
 
 changed=false
 
-######################################
+########################
 # 1. PROCESS CHECK
-######################################
+########################
 echo
 echo "[PROCESS]"
+
+# 1️⃣ 当前进程快照（完整，进日志用）
 ps aux --sort=pid > /tmp/ps.now
 
 if [ -f "$BASELINE_DIR/ps.txt" ]; then
+  # 2️⃣ 完整 diff 写日志，不提示）
   diff -u "$BASELINE_DIR/ps.txt" /tmp/ps.now || true > /tmp/ps.diff.full
-  grep -E '^\+.*(/tmp|/var/tmp|/dev/shm|/home|bash|sh )' /tmp/ps.diff.full > /tmp/ps.diff.risky || true
+
+  # 3️⃣ 提取“新增进程行”
+  grep '^+' /tmp/ps.diff.full \
+    | grep -v '^+++' \
+    > /tmp/ps.diff.added || true
+
+  # 4️⃣ 过滤可疑的进程特征
+  grep -E '(/tmp|/var/tmp|/dev/shm|/home/|bash -c|sh -c|python -c|perl -e|curl .*bash|wget .*sh|nc |socat )' \
+    /tmp/ps.diff.added > /tmp/ps.diff.risky || true
 
   if [ -s /tmp/ps.diff.risky ]; then
-    echo "⚠️  Suspicious process changes"
+    echo "⚠️  Suspicious process detected:"
     sed 's/^/  /' /tmp/ps.diff.risky
     changed=true
   else
@@ -49,6 +60,8 @@ if [ -f "$BASELINE_DIR/ps.txt" ]; then
 else
   echo "Baseline not found, creating..."
 fi
+
+# 5️⃣ 更新 baseline
 cp /tmp/ps.now "$BASELINE_DIR/ps.txt"
 
 ######################################
